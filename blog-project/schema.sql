@@ -134,12 +134,22 @@ CREATE TABLE IF NOT EXISTS followers (
   KEY idx_followers_authorEmail (authorEmail)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ─── user_kv (generic key-value per user) ────────────────
+CREATE TABLE IF NOT EXISTS user_kv (
+  user_email VARCHAR(254) NOT NULL,
+  kv_key     VARCHAR(120) NOT NULL,
+  kv_val     LONGTEXT     NOT NULL,
+  PRIMARY KEY (user_email, kv_key),
+  KEY idx_user_kv_email (user_email)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ─── Seed default admin account ──────────────────────────
+-- IMPORTANT: Change this default admin password after first login.
 INSERT IGNORE INTO users (email, fullName, password, bio, expertise, role, createdAt)
 VALUES (
   'admin@placementprep.local',
   'Admin',
-  'admin123',
+  '$2y$10$BCH5QZfVDCNdFJ3ZsbKIS.GDX7bQG3tjlySee92WuNk922HBg6MEq',
   'Platform administrator',
   'Operations',
   'admin',
