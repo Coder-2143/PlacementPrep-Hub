@@ -1,171 +1,159 @@
 /* =========================================================
    PlacementPrep Hub - Vanilla JavaScript
-   localStorage stays as client-side cache.
-   SyncStoreAPI replaced with typed REST API client.
+   State is loaded from backend APIs into in-memory cache.
    ========================================================= */
 
 const BlogStore = {
+  _cache: Object.create(null),
   get(key, fallback) {
-    try {
-      const raw = localStorage.getItem(key);
-      return raw ? JSON.parse(raw) : fallback;
-    } catch (e) { console.error("localStorage read:", key, e); return fallback; }
+    return Object.prototype.hasOwnProperty.call(this._cache, key) ? this._cache[key] : fallback;
   },
   set(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); return true; }
-    catch (e) { console.error("localStorage write:", key, e); return false; }
+    this._cache[key] = value;
+    return true;
   },
   remove(key) {
-    try { localStorage.removeItem(key); }
-    catch (e) { console.error("localStorage remove:", key, e); }
+    delete this._cache[key];
   }
 };
 
 /* ===== REST API client ===== */
 const API = {
-  _enabled: /^https?:/i.test(window.location.protocol),
+  _base: "/api/index.php",
 
-  async _req(method, path, body) {
-    if (!this._enabled) return null;
+  _url(endpoint, query = {}) {
+    const url = new URL(this._base, window.location.origin);
+    url.searchParams.set("endpoint", endpoint);
+    Object.entries(query).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, String(v));
+    });
+    return url.pathname + url.search;
+  },
+
+  async _req(method, endpoint, body, query) {
+    const opts = {
+      method,
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" }
+    };
+    if (body !== undefined) opts.body = JSON.stringify(body);
+
+    let res;
     try {
-      const opts = {
-        method,
-        headers: { "Content-Type": "application/json" }
-      };
-      if (body !== undefined) opts.body = JSON.stringify(body);
-      const res = await fetch(path, opts);
-      if (!res.ok) return null;
-      return await res.json();
-    } catch (e) {
-      console.warn(`API ${method} ${path} failed:`, e);
-      return null;
+      res = await fetch(this._url(endpoint, query), opts);
+    } catch {
+      throw new Error("Network request failed");
     }
+
+    let payload = null;
+    try { payload = await res.json(); } catch { payload = null; }
+
+    if (!res.ok || (payload && payload.ok === false)) {
+      const message = (payload && (payload.error || payload.message)) || `Request failed (${res.status})`;
+      throw new Error(message);
+    }
+    return payload || { ok: true };
   },
 
-  // ── Users ────────────────────────────────────────────────
-  async register(user)  { return this._req("POST", "/api/users/register", user); },
-  async login(email, password) { return this._req("POST", "/api/users/login", { email, password }); },
-  async listUsers()     { return this._req("GET",  "/api/users"); },
-  async updateRole(email, role) { return this._req("PUT", `/api/users/${encodeURIComponent(email)}/role`, { role }); },
+  async register(user) { return this._req("POST", "register", user); },
+  async login(email, password) { return this._req("POST", "login", { email, password }); },
+  async logout() { return this._req("POST", "logout", {}); },
+  async session() { return this._req("GET", "session"); },
+  async listUsers() { return this._req("GET", "users"); },
+  async updateRole(email, role) { return this._req("PUT", "role", { email, role }); },
 
-  // ── Posts ────────────────────────────────────────────────
-  async getPosts()      { return this._req("GET",  "/api/posts"); },
-  async getPost(id)     { return this._req("GET",  `/api/posts/${encodeURIComponent(id)}`); },
-  async createPost(post){ return this._req("POST", "/api/posts", post); },
-  async deletePost(id)  { return this._req("DELETE", `/api/posts/${encodeURIComponent(id)}`); },
+  async getPosts() { return this._req("GET", "posts"); },
+  async getPost(id) { return this._req("GET", "post", undefined, { id }); },
+  async createPost(post) { return this._req("POST", "posts", post); },
+  async deletePost(id) { return this._req("DELETE", "post", undefined, { id }); },
 
-  // ── Comments ─────────────────────────────────────────────
-  async getComments(postId)            { return this._req("GET",  `/api/comments/${encodeURIComponent(postId)}`); },
-  async addComment(postId, comment)    { return this._req("POST", `/api/comments/${encodeURIComponent(postId)}`, comment); },
-  async addReply(commentId, reply)     { return this._req("POST", `/api/comments/${encodeURIComponent(commentId)}/replies`, reply); },
+  async getComments(postId) { return this._req("GET", "comments", undefined, { postId }); },
+  async addComment(postId, comment) { return this._req("POST", "comments", comment, { postId }); },
+  async addReply(commentId, reply) { return this._req("POST", "replies", reply, { commentId }); },
 
-  // ── Likes ────────────────────────────────────────────────
-  async toggleLike(postId, actorId)   { return this._req("POST", "/api/likes", { postId, actorId }); },
-  async getLikes(postId)              { return this._req("GET",  `/api/likes/${encodeURIComponent(postId)}`); },
+  async toggleLike(postId, actorId) { return this._req("POST", "likes", { postId, actorId }); },
+  async getLikes(postId) { return this._req("GET", "likes", undefined, { postId }); },
 
-  // ── Saved ────────────────────────────────────────────────
-  async toggleSaved(userKey, postId)  { return this._req("POST", "/api/saved", { userKey, postId }); },
-  async getSaved(userKey)             { return this._req("GET",  `/api/saved/${encodeURIComponent(userKey)}`); },
+  async toggleSaved(userKey, postId) { return this._req("POST", "saved", { userKey, postId }); },
+  async getSaved(userKey) { return this._req("GET", "saved", undefined, { userKey }); },
 
-  // ── Reports ──────────────────────────────────────────────
-  async addReport(report)             { return this._req("POST",   "/api/reports", report); },
-  async getReports()                  { return this._req("GET",    "/api/reports"); },
-  async deleteReport(id)              { return this._req("DELETE", `/api/reports/${encodeURIComponent(id)}`); },
+  async addReport(report) { return this._req("POST", "report", report); },
+  async getReports() { return this._req("GET", "report"); },
+  async deleteReport(id) { return this._req("DELETE", "report", undefined, { id }); },
 
-  // ── Contact ──────────────────────────────────────────────
-  async addContact(msg)               { return this._req("POST", "/api/contact", msg); },
-  async getContact()                  { return this._req("GET",  "/api/contact"); },
+  async addContact(msg) { return this._req("POST", "contact", msg); },
+  async getContact() { return this._req("GET", "contact"); },
 
-  // ── Analytics ────────────────────────────────────────────
-  async trackView(postId)             { return this._req("POST", `/api/analytics/${encodeURIComponent(postId)}`); },
-  async getAnalytics(postId)          { return this._req("GET",  `/api/analytics/${encodeURIComponent(postId)}`); },
+  async trackView(postId) { return this._req("POST", "analytics", { postId }); },
+  async getAnalytics(postId) { return this._req("GET", "analytics", undefined, { postId }); },
 
-  // ── Drafts ───────────────────────────────────────────────
-  async saveDraft(email, draft)       { return this._req("PUT", `/api/drafts/${encodeURIComponent(email)}`, draft); },
-  async getDraft(email)               { return this._req("GET", `/api/drafts/${encodeURIComponent(email)}`); },
+  async saveDraft(email, draft) { return this._req("PUT", "drafts", draft, { email }); },
+  async getDraft(email) { return this._req("GET", "drafts", undefined, { email }); },
 
-  // ── Followers ────────────────────────────────────────────
-  async toggleFollow(authorEmail, followerEmail) {
-    return this._req("POST", "/api/followers", { authorEmail, followerEmail });
-  },
-  async getFollowers(email)           { return this._req("GET", `/api/followers/${encodeURIComponent(email)}`); },
+  async toggleFollow(authorEmail, followerEmail) { return this._req("POST", "followers", { authorEmail, followerEmail }); },
+  async getFollowers(email) { return this._req("GET", "followers", undefined, { email }); },
 
-  // ── Hydrate localStorage from MySQL on page load ─────────
+  async getUserKV(key) { return this._req("GET", "user_kv", undefined, { key }); },
+  async setUserKV(key, value) { return this._req("PUT", "user_kv", { key, value }); },
+  async deleteUserKV(key) { return this._req("DELETE", "user_kv", undefined, { key }); },
+
   async hydrateFromServer() {
-    if (!this._enabled) return;
+    const session = await this.session();
+    BlogStore.set("loggedInUser", session.user || null);
+
+    const postsRes = await this.getPosts();
+    BlogStore.set("posts", postsRes.posts || []);
+
+    const usersRes = await this.listUsers();
+    BlogStore.set("users", usersRes.users || []);
+
     try {
-      // Posts
-      const postsRes = await this.getPosts();
-      if (postsRes && postsRes.posts) {
-        BlogStore.set("posts", postsRes.posts);
-      }
-
-      // Users
-      const usersRes = await this.listUsers();
-      if (usersRes && usersRes.users) {
-        BlogStore.set("users", usersRes.users);
-      }
-
-      // Reports
       const reportsRes = await this.getReports();
-      if (reportsRes && reportsRes.reports) {
-        BlogStore.set("reports", reportsRes.reports);
-      }
+      BlogStore.set("reports", reportsRes.reports || []);
+    } catch {
+      BlogStore.set("reports", []);
+    }
 
-      // Contact messages
+    try {
       const contactRes = await this.getContact();
-      if (contactRes && contactRes.messages) {
-        BlogStore.set("contactMessages", contactRes.messages);
-      }
+      BlogStore.set("contactMessages", contactRes.messages || []);
+    } catch {
+      BlogStore.set("contactMessages", []);
+    }
 
-      // For each post: likes, comments, analytics
-      const allPosts = (postsRes && postsRes.posts) ? postsRes.posts : [];
-      const seedIds = seedPosts.map(p => String(p.id));
-      const dbPostIds = allPosts.map(p => String(p.id));
-      const allPostIds = Array.from(new Set([...seedIds, ...dbPostIds]));
+    const allPosts = postsRes.posts || [];
+    const allPostIds = Array.from(new Set([...seedPosts.map(p => String(p.id)), ...allPosts.map(p => String(p.id))]));
 
-      const likesByPost = {};
-      await Promise.all(allPostIds.map(async postId => {
-        const [likesRes, commentsRes, analyticsRes] = await Promise.all([
-          this.getLikes(postId),
-          this.getComments(postId),
-          this.getAnalytics(postId)
-        ]);
-        if (likesRes && likesRes.actors) likesByPost[postId] = likesRes.actors;
-        if (commentsRes && commentsRes.comments) BlogStore.set(`comments:${postId}`, commentsRes.comments);
-        if (analyticsRes) BlogStore.set(`analytics:${postId}`, { views: analyticsRes.views || 0 });
+    const likesByPost = {};
+    await Promise.all(allPostIds.map(async postId => {
+      const [likesRes, commentsRes, analyticsRes] = await Promise.all([
+        this.getLikes(postId),
+        this.getComments(postId),
+        this.getAnalytics(postId)
+      ]);
+      likesByPost[postId] = likesRes.actors || [];
+      BlogStore.set(`comments:${postId}`, commentsRes.comments || []);
+      BlogStore.set(`analytics:${postId}`, { views: analyticsRes.views || 0 });
+    }));
+    BlogStore.set("likesByPost", likesByPost);
+    BlogStore.set("likesMigrated_v2", true);
+
+    const loggedIn = BlogStore.get("loggedInUser", null);
+    if (loggedIn && loggedIn.email) {
+      const savedRes = await this.getSaved(loggedIn.email);
+      BlogStore.set(`savedPosts:${loggedIn.email}`, savedRes.postIds || []);
+
+      const draftRes = await this.getDraft(loggedIn.email);
+      BlogStore.set(`draft:${loggedIn.email}`, draftRes.draft || null);
+
+      const uniqueAuthorEmails = [...new Set(allPosts.map(p => p.authorEmail).filter(Boolean))];
+      await Promise.all(uniqueAuthorEmails.map(async email => {
+        const fr = await this.getFollowers(email);
+        BlogStore.set(`followers:${email}`, fr.followers || []);
       }));
-      BlogStore.set("likesByPost", likesByPost);
-      BlogStore.set("likesMigrated_v2", true);
-
-      // Saved posts for current user
-      const loggedIn = BlogStore.get("loggedInUser", null);
-      if (loggedIn && loggedIn.email) {
-        const savedRes = await this.getSaved(loggedIn.email);
-        if (savedRes && savedRes.postIds) BlogStore.set(`savedPosts:${loggedIn.email}`, savedRes.postIds);
-
-        const draftRes = await this.getDraft(loggedIn.email);
-        if (draftRes && draftRes.draft) BlogStore.set(`draft:${loggedIn.email}`, draftRes.draft);
-
-        const followersReqs = await Promise.all(
-          [...new Set(allPostIds.map(id => {
-            const post = allPosts.find(p => String(p.id) === id) || seedPosts.find(p => String(p.id) === id);
-            return post ? post.authorEmail : null;
-          }).filter(Boolean))].map(async email => {
-            const fr = await this.getFollowers(email);
-            return { email, followers: (fr && fr.followers) ? fr.followers : [] };
-          })
-        );
-        followersReqs.forEach(({ email, followers }) => {
-          BlogStore.set(`followers:${email}`, followers);
-        });
-      } else {
-        // Guest saved posts
-        const savedRes = await this.getSaved("savedPosts:guest");
-        if (savedRes && savedRes.postIds) BlogStore.set("savedPosts:guest", savedRes.postIds);
-      }
-    } catch (e) {
-      console.warn("Hydration from server failed (offline?). Using local data.", e);
+    } else {
+      const savedRes = await this.getSaved("savedPosts:guest");
+      BlogStore.set("savedPosts:guest", savedRes.postIds || []);
     }
   }
 };
@@ -322,7 +310,7 @@ function showToast(message, kind = "success") {
     toast.style.borderColor = kind === "error" ? "rgba(255, 107, 107, 0.35)" : "rgba(31, 78, 216, 0.26)";
     toast.style.color = kind === "error" ? "#ff6b6b" : "var(--accent-2)";
     toast.style.background = kind === "error" ? "rgba(255, 107, 107, 0.08)" : "rgba(31, 78, 216, 0.08)";
-    toast.innerHTML = message;
+    toast.textContent = String(message);
     $t.stop(true, true).fadeIn(160);
     clearTimeout(window.__toastTimer);
     window.__toastTimer = setTimeout(() => { $t.fadeOut(180); }, 2600);
@@ -332,7 +320,7 @@ function showToast(message, kind = "success") {
   toast.style.borderColor = kind === "error" ? "rgba(255, 107, 107, 0.35)" : "rgba(31, 78, 216, 0.26)";
   toast.style.color = kind === "error" ? "#ff6b6b" : "var(--accent-2)";
   toast.style.background = kind === "error" ? "rgba(255, 107, 107, 0.08)" : "rgba(31, 78, 216, 0.08)";
-  toast.innerHTML = message;
+  toast.textContent = String(message);
   clearTimeout(window.__toastTimer);
   window.__toastTimer = setTimeout(() => { toast.style.display = "none"; }, 2600);
 }
@@ -487,8 +475,24 @@ function getTrendingPosts() {
 }
 
 function getDraftForUser(email) { return BlogStore.get(`draft:${email}`, null); }
-function followAuthor(email) { const u = getLoggedInUser(); if (!u) return; const f = BlogStore.get("followers:" + email, []); if (!f.includes(u.email)) { f.push(u.email); BlogStore.set("followers:" + email, f); } API.toggleFollow(email, u.email); }
-function unfollowAuthor(email) { const u = getLoggedInUser(); if (!u) return; BlogStore.set("followers:" + email, BlogStore.get("followers:" + email, []).filter(e => e !== u.email)); API.toggleFollow(email, u.email); }
+async function followAuthor(email) {
+  const u = getLoggedInUser();
+  if (!u) return false;
+  const result = await API.toggleFollow(email, u.email);
+  if (!result.following) return false;
+  const followers = BlogStore.get("followers:" + email, []);
+  if (!followers.includes(u.email)) followers.push(u.email);
+  BlogStore.set("followers:" + email, followers);
+  return true;
+}
+async function unfollowAuthor(email) {
+  const u = getLoggedInUser();
+  if (!u) return false;
+  const result = await API.toggleFollow(email, u.email);
+  if (result.following) return false;
+  BlogStore.set("followers:" + email, BlogStore.get("followers:" + email, []).filter(e => e !== u.email));
+  return true;
+}
 function isFollowingAuthor(email) { const u = getLoggedInUser(); if (!u) return false; return BlogStore.get("followers:" + email, []).includes(u.email); }
 function getFollowers(email) { return BlogStore.get("followers:" + email, []); }
 
@@ -496,7 +500,7 @@ function trackPostView(postId) {
   const a = BlogStore.get("analytics:" + postId, { views: 0 });
   a.views = (a.views || 0) + 1;
   BlogStore.set("analytics:" + postId, a);
-  API.trackView(postId);
+  API.trackView(postId).catch(() => {});
 }
 
 function getPostAnalytics(postId) { return BlogStore.get("analytics:" + postId, { views: 0 }); }
@@ -571,16 +575,18 @@ function initNav() {
 
   const logoutLink = document.getElementById("logoutLink");
   if (logoutLink) {
-    logoutLink.addEventListener("click", e => {
+    logoutLink.addEventListener("click", async e => {
       e.preventDefault();
+      try { await API.logout(); } catch {}
       BlogStore.remove("loggedInUser");
       window.location.href = "index.html";
     });
   }
   const logoutLinkDash = document.getElementById("logoutLinkDashboard");
   if (logoutLinkDash) {
-    logoutLinkDash.addEventListener("click", e => {
+    logoutLinkDash.addEventListener("click", async e => {
       e.preventDefault();
+      try { await API.logout(); } catch {}
       BlogStore.remove("loggedInUser");
       window.location.href = "index.html";
     });
@@ -596,7 +602,26 @@ function initTheme() {
 function initHeroTyping() {
   const target = document.getElementById("typingText");
   if (!target) return;
-  target.textContent = "placement prep.";
+  const words = ["placement prep.", "DSA practice.", "resume building.", "interview confidence."];
+  let wordIndex = 0;
+  let charIndex = 0;
+  let deleting = false;
+  const tick = () => {
+    const current = words[wordIndex];
+    charIndex += deleting ? -1 : 1;
+    target.textContent = current.slice(0, charIndex);
+    if (!deleting && charIndex === current.length) {
+      deleting = true;
+      setTimeout(tick, 1000);
+      return;
+    }
+    if (deleting && charIndex === 0) {
+      deleting = false;
+      wordIndex = (wordIndex + 1) % words.length;
+    }
+    setTimeout(tick, deleting ? 45 : 80);
+  };
+  tick();
 }
 
 /* ===== Home Page ===== */
@@ -769,7 +794,7 @@ function initSinglePost() {
           <button class="btn btn-secondary" id="reportButton"><i class="fa-regular fa-flag"></i></button>
         </div>
       </div>
-      <div class="article-content section-small">${post.content.includes('<') ? post.content : post.content.split("\n").filter(Boolean).map(p => `<p>${escapeHTML(p)}</p>`).join("")}</div>
+      <div class="article-content section-small">${String(post.content || "").split("\n").filter(Boolean).map(p => `<p>${escapeHTML(p)}</p>`).join("")}</div>
       <button class="btn btn-secondary" id="likeButton" data-post-id="${escapeHTML(post.id)}" data-liked="${liked}"><i class="${liked ? "fa-solid" : "fa-regular"} fa-heart"></i> <span id="likeCount">${getLikeCount(post)}</span> Likes</button>
       <div class="dashboard-panel" id="reportPanel" style="margin-top:16px">
         <p class="eyebrow">Report guide</p>
@@ -850,27 +875,31 @@ function initComments(postId) {
   }
 
   if (commentForm) {
-    commentForm.addEventListener("submit", e => {
+    commentForm.addEventListener("submit", async e => {
       e.preventDefault();
       const user = getLoggedInUser();
-      const name = user ? user.fullName : "Guest reader";
-      const email = user ? user.email : "";
+      if (!user) { commentError.textContent = "Please log in to comment."; return; }
+      const name = user.fullName;
+      const email = user.email;
       const comment = document.getElementById("commentText").value.trim();
       if (!comment) { commentError.textContent = "Write a comment first."; return; }
       const commentObj = { id: Date.now().toString(), name, email, comment, date: formatDate(new Date()), replies: [] };
-      const comments = BlogStore.get(commentsKey, []);
-      comments.push(commentObj);
-      BlogStore.set(commentsKey, comments);
-      // Sync to server (fire-and-forget)
-      API.addComment(postId, { id: commentObj.id, name: commentObj.name, email: commentObj.email, comment: commentObj.comment, date: commentObj.date });
-      commentError.textContent = "";
-      commentForm.reset();
-      renderComments();
+      try {
+        await API.addComment(postId, { id: commentObj.id, name: commentObj.name, email: commentObj.email, comment: commentObj.comment, date: commentObj.date });
+        const comments = BlogStore.get(commentsKey, []);
+        comments.push(commentObj);
+        BlogStore.set(commentsKey, comments);
+        commentError.textContent = "";
+        commentForm.reset();
+        renderComments();
+      } catch (err) {
+        commentError.textContent = err.message || "Failed to save comment.";
+      }
     });
   }
 
   if (commentsList) {
-    commentsList.addEventListener("submit", e => {
+    commentsList.addEventListener("submit", async e => {
       if (!e.target.classList.contains("reply-form")) return;
       e.preventDefault();
       const form = e.target;
@@ -880,15 +909,20 @@ function initComments(postId) {
       const text = input.value.trim();
       if (!text) { error.textContent = "Reply cannot be empty."; return; }
       const user = getLoggedInUser();
-      const reply = { id: Date.now().toString(), name: user ? user.fullName : "Guest reader", text, date: formatDate(new Date()) };
+      if (!user) { error.textContent = "Please log in to reply."; return; }
+      const reply = { id: Date.now().toString(), name: user.fullName, text, date: formatDate(new Date()) };
       const comments = BlogStore.get(commentsKey, []);
       const target = comments.find(c => String(c.id) === String(commentId));
       if (target) {
-        target.replies = target.replies || [];
-        target.replies.push(reply);
-        BlogStore.set(commentsKey, comments);
-        API.addReply(commentId, { id: reply.id, name: reply.name, text: reply.text, date: reply.date });
-        renderComments();
+        try {
+          await API.addReply(commentId, { id: reply.id, name: reply.name, text: reply.text, date: reply.date });
+          target.replies = target.replies || [];
+          target.replies.push(reply);
+          BlogStore.set(commentsKey, comments);
+          renderComments();
+        } catch (err) {
+          error.textContent = err.message || "Failed to save reply.";
+        }
       }
     });
   }
@@ -958,7 +992,7 @@ function initDashboard() {
             </div>
             <div class="publication-actions">
               <a class="btn btn-secondary btn-sm" href="post.html?id=${encodeURIComponent(p.id)}"><i class="fa-solid fa-eye"></i> View</a>
-              <button class="btn btn-secondary btn-sm delete-post" data-id="${p.id}" data-author-email="${escapeHTML(p.authorEmail)}"><i class="fa-solid fa-trash"></i></button>
+              <button class="btn btn-secondary btn-sm delete-post" data-id="${escapeHTML(p.id)}" data-author-email="${escapeHTML(p.authorEmail)}"><i class="fa-solid fa-trash"></i></button>
             </div>
           </article>
         `).join("")
@@ -1072,7 +1106,7 @@ function initCreatePost() {
       BlogStore.set(draftKey, draftObj);
       // Debounced server save
       clearTimeout(draftSaveTimer);
-      draftSaveTimer = setTimeout(() => { API.saveDraft(user.email, draftObj); }, 1500);
+      draftSaveTimer = setTimeout(() => { API.saveDraft(user.email, draftObj).catch(() => {}); }, 1500);
     } else {
       BlogStore.remove(draftKey);
     }
@@ -1082,7 +1116,7 @@ function initCreatePost() {
   [title, category, coverImage, videoUrl, youtubeUrl, content].filter(Boolean).forEach(el => el.addEventListener("input", updatePreview));
   updatePreview();
 
-  form.addEventListener("submit", e => {
+  form.addEventListener("submit", async e => {
     e.preventDefault();
     const t = title ? title.value.trim() : "";
     const c = category ? category.value : "";
@@ -1111,26 +1145,25 @@ function initCreatePost() {
       likes: 0
     };
 
-    // Save to localStorage
-    const posts = getStoredPosts();
-    posts.push(post);
-    BlogStore.set("posts", posts);
-    BlogStore.remove(draftKey);
-
-    // Sync to MySQL (fire-and-forget)
-    API.createPost(post);
-
-    error.textContent = "";
-    form.reset();
-    updatePreview();
-
-    const toast = document.getElementById("createToast");
-    if (toast) {
-      toast.style.display = "block";
-      toast.innerHTML = `<strong>Published.</strong> Your post is saved. <a class="category-pill" href="post.html?id=${encodeURIComponent(post.id)}">View it</a>`;
-      setTimeout(() => { toast.style.display = "none"; }, 3000);
-    } else {
-      alert("Post published successfully!");
+    try {
+      await API.createPost(post);
+      const posts = getStoredPosts();
+      posts.push(post);
+      BlogStore.set("posts", posts);
+      BlogStore.remove(draftKey);
+      error.textContent = "";
+      form.reset();
+      updatePreview();
+      const toast = document.getElementById("createToast");
+      if (toast) {
+        toast.style.display = "block";
+        toast.textContent = "Published. Your post is saved.";
+        setTimeout(() => { toast.style.display = "none"; }, 3000);
+      } else {
+        alert("Post published successfully!");
+      }
+    } catch (err) {
+      error.textContent = err.message || "Failed to publish post.";
     }
   });
 }
@@ -1159,29 +1192,6 @@ function guardAdminPage() {
   }
 }
 
-function ensureDefaultAdminAccount() {
-  const users = BlogStore.get("users", []);
-  let changed = false;
-  const normalizedUsers = users.map(u => {
-    const nextRole = normalizeRole(u.role);
-    if (u.role !== nextRole) changed = true;
-    return { ...u, role: nextRole };
-  });
-  const hasAdmin = normalizedUsers.some(u => normalizeRole(u.role) === "admin");
-  if (!hasAdmin) {
-    normalizedUsers.push({
-      fullName: "Admin",
-      email: "admin@placementprep.local",
-      password: "admin123",
-      bio: "Platform administrator",
-      expertise: "Operations",
-      role: "admin"
-    });
-    changed = true;
-  }
-  if (changed) BlogStore.set("users", normalizedUsers);
-}
-
 function initSignup() {
   const form = document.getElementById("signupForm");
   if (!form) return;
@@ -1200,23 +1210,19 @@ function initSignup() {
     if (password.length < 6) { error.textContent = "Password must be at least 6 characters."; return; }
     if (password !== confirmPassword) { error.textContent = "Passwords do not match."; return; }
 
-    const users = BlogStore.get("users", []);
-    if (users.some(u => u.email.toLowerCase() === email)) { error.textContent = "An account with this email already exists."; return; }
-
     const newUser = { fullName, email, password, bio, expertise, role: "user" };
-    users.push(newUser);
-    BlogStore.set("users", users);
-
-    // Sync to MySQL
-    const result = await API.register(newUser);
-    if (result && result.ok === false && result.error && result.error.includes("already")) {
-      // Already exists in DB — non-fatal for the user flow since local check passed
+    try {
+      await API.register(newUser);
+      const users = BlogStore.get("users", []);
+      users.push({ fullName, email, bio, expertise, role: "user" });
+      BlogStore.set("users", users);
+      error.textContent = "";
+      const success = document.getElementById("signupSuccess");
+      if (success) success.textContent = "Account created. Redirecting to login...";
+      setTimeout(() => { window.location.href = "login.html"; }, 900);
+    } catch (err) {
+      error.textContent = err.message || "Signup failed.";
     }
-
-    error.textContent = "";
-    const success = document.getElementById("signupSuccess");
-    if (success) success.textContent = "Account created. Redirecting to login...";
-    setTimeout(() => { window.location.href = "login.html"; }, 900);
   });
 }
 
@@ -1233,23 +1239,17 @@ function initLogin() {
     if (!email || !password) { error.textContent = "Email and password are required."; return; }
     if (!isValidEmail(email) || password.length < 6) { error.textContent = "Use a valid email and a 6 character password."; return; }
 
-    // Try server first
-    const result = await API.login(email, password);
     let user = null;
-    if (result && result.ok && result.user) {
-      user = result.user;
-      // Update local users list
-      const localUsers = BlogStore.get("users", []);
-      const idx = localUsers.findIndex(u => u.email.toLowerCase() === email);
-      if (idx === -1) localUsers.push(user);
-      else localUsers[idx] = { ...localUsers[idx], ...user };
-      BlogStore.set("users", localUsers);
-    } else {
-      // Fallback to localStorage
-      user = BlogStore.get("users", []).find(u => u.email.toLowerCase() === email && u.password === password);
+    try {
+      const result = await API.login(email, password);
+      user = result.user || null;
+    } catch (err) {
+      error.textContent = err.message || "Invalid login credentials.";
+      if (formCard) { formCard.classList.add("shake"); setTimeout(() => formCard.classList.remove("shake"), 600); }
+      return;
     }
 
-    if (!user) {
+    if (!user || !user.email) {
       error.textContent = "Invalid login credentials.";
       if (formCard) { formCard.classList.add("shake"); setTimeout(() => formCard.classList.remove("shake"), 600); }
       return;
@@ -1276,7 +1276,7 @@ function initContact() {
   if (message && counter) {
     message.addEventListener("input", () => { counter.textContent = `${message.value.length} characters`; });
   }
-  form.addEventListener("submit", e => {
+  form.addEventListener("submit", async e => {
     e.preventDefault();
     const name = document.getElementById("contactName").value.trim();
     const email = document.getElementById("contactEmail").value.trim();
@@ -1285,23 +1285,26 @@ function initContact() {
     if (!name || !email || !text) { error.textContent = "All fields are required."; return; }
     if (!isValidEmail(email)) { error.textContent = "Enter a valid email address."; return; }
     const msg = { id: Date.now().toString(), name, email, message: text, date: formatDate(new Date()) };
-    const messages = BlogStore.get("contactMessages", []);
-    messages.push(msg);
-    BlogStore.set("contactMessages", messages);
-    // Sync to MySQL
-    API.addContact(msg);
-    error.textContent = "";
-    form.reset();
-    if (counter) counter.textContent = "0 characters";
-    const success = document.getElementById("contactSuccess");
-    if (success) { success.textContent = "Message sent successfully."; success.style.display = "block"; }
+    try {
+      await API.addContact(msg);
+      const messages = BlogStore.get("contactMessages", []);
+      messages.push(msg);
+      BlogStore.set("contactMessages", messages);
+      error.textContent = "";
+      form.reset();
+      if (counter) counter.textContent = "0 characters";
+      const success = document.getElementById("contactSuccess");
+      if (success) { success.textContent = "Message sent successfully."; success.style.display = "block"; }
+    } catch (err) {
+      error.textContent = err.message || "Failed to send message.";
+    }
   });
 }
 
 /* ===== Event Delegation ===== */
 function initEventDelegation() {
   // Like button
-  document.addEventListener("click", e => {
+  document.addEventListener("click", async e => {
     const btn = e.target.closest("#likeButton");
     if (btn) {
       migrateLegacyLikesIfNeeded();
@@ -1320,8 +1323,12 @@ function initEventDelegation() {
         BlogStore.set("likeCountFallback", fallback);
       }
 
-      // Sync to MySQL
-      API.toggleLike(postId, actor);
+      try {
+        await API.toggleLike(postId, actor);
+      } catch (err) {
+        showToast(err.message || "Failed to update like.", "error");
+        return;
+      }
 
       const isNowLiked = !already;
       btn.setAttribute("data-liked", String(isNowLiked));
@@ -1336,7 +1343,7 @@ function initEventDelegation() {
   });
 
   // Save post
-  document.addEventListener("click", e => {
+  document.addEventListener("click", async e => {
     const btn = e.target.closest(".save-post-btn");
     if (!btn) return;
     e.preventDefault();
@@ -1345,10 +1352,14 @@ function initEventDelegation() {
     const apiKey = getApiSavedKey();
     const saved = BlogStore.get(key, []).map(String);
     const wasSaved = saved.includes(id);
+    try {
+      await API.toggleSaved(apiKey, id);
+    } catch (err) {
+      showToast(err.message || "Failed to update saved posts.", "error");
+      return;
+    }
     const next = wasSaved ? saved.filter(pid => pid !== id) : saved.concat(id);
     BlogStore.set(key, Array.from(new Set(next)));
-    // Sync to MySQL
-    API.toggleSaved(apiKey, id);
     document.querySelectorAll(`.save-post-btn[data-id="${CSS.escape(id)}"]`).forEach(b => {
       const icon = b.querySelector("i");
       const span = b.querySelector("span");
@@ -1424,7 +1435,7 @@ function initEventDelegation() {
 
   const reportForm = document.getElementById("reportForm");
   if (reportForm) {
-    reportForm.addEventListener("submit", e => {
+    reportForm.addEventListener("submit", async e => {
       e.preventDefault();
       const reason = document.getElementById("reportReason").value;
       const note = document.getElementById("reportNote").value.trim();
@@ -1433,16 +1444,19 @@ function initEventDelegation() {
       const postId = params.get("id");
       if (!reason) { error.textContent = "Choose a report reason."; return; }
       const report = { id: Date.now().toString(), postId, reason, note, date: formatDate(new Date()) };
-      const reports = BlogStore.get("reports", []);
-      reports.push(report);
-      BlogStore.set("reports", reports);
-      // Sync to MySQL
-      API.addReport(report);
-      error.textContent = "";
-      reportForm.reset();
-      document.getElementById("reportPanel").style.display = "none";
-      const success = document.getElementById("reportSuccess");
-      if (success) { success.textContent = "Report saved."; success.style.display = "block"; }
+      try {
+        await API.addReport(report);
+        const reports = BlogStore.get("reports", []);
+        reports.push(report);
+        BlogStore.set("reports", reports);
+        error.textContent = "";
+        reportForm.reset();
+        document.getElementById("reportPanel").style.display = "none";
+        const success = document.getElementById("reportSuccess");
+        if (success) { success.textContent = "Report saved."; success.style.display = "block"; }
+      } catch (err) {
+        error.textContent = err.message || "Failed to save report.";
+      }
     });
   }
 
@@ -1478,10 +1492,14 @@ function initEventDelegation() {
         BlogStore.set("deletedSeedPostIds", deletedSeedPostIds);
       }
     } else {
+      try {
+        await API.deletePost(id);
+      } catch (err) {
+        showToast(err.message || "Failed to delete post.", "error");
+        return;
+      }
       const posts = BlogStore.get("posts", []).filter(p => String(p.id) !== String(id));
       BlogStore.set("posts", posts);
-      // Sync to MySQL
-      API.deletePost(id);
     }
 
     const likesByPost = BlogStore.get("likesByPost", {});
@@ -1499,10 +1517,14 @@ function initEventDelegation() {
     const currentUser = getLoggedInUser();
     if (!isAdminUser(currentUser)) { showToast("Only admins can resolve reports.", "error"); return; }
     const reportId = btn.getAttribute("data-id");
+    try {
+      await API.deleteReport(reportId);
+    } catch (err) {
+      showToast(err.message || "Failed to resolve report.", "error");
+      return;
+    }
     const reports = BlogStore.get("reports", []).filter(r => String(r.id) !== String(reportId));
     BlogStore.set("reports", reports);
-    // Sync to MySQL
-    API.deleteReport(reportId);
     showToast("Report resolved.");
     if (window.renderDashboard) window.renderDashboard();
   });
@@ -1521,13 +1543,18 @@ function initEventDelegation() {
       const nextRole = normalizeRole(u.role) === "admin" ? "user" : "admin";
       return { ...u, role: nextRole };
     });
+    const targetUser = nextUsers.find(u => String(u.email).toLowerCase() === email);
+    if (!targetUser) return;
+    try {
+      await API.updateRole(email, targetUser.role);
+    } catch (err) {
+      showToast(err.message || "Failed to update role.", "error");
+      return;
+    }
     BlogStore.set("users", nextUsers);
     if (currentUser && String(currentUser.email).toLowerCase() === email) {
       BlogStore.set("loggedInUser", { ...currentUser, role: normalizeRole(currentUser.role) === "admin" ? "user" : "admin" });
     }
-    // Sync to MySQL
-    const targetUser = nextUsers.find(u => String(u.email).toLowerCase() === email);
-    if (targetUser) API.updateRole(email, targetUser.role);
     showToast("User role updated.");
     if (window.renderDashboard) window.renderDashboard();
   });
@@ -1555,7 +1582,7 @@ function initProfile() {
 
   container.innerHTML = `
     <div class="profile-header">
-      <div class="profile-avatar">${user.fullName.charAt(0).toUpperCase()}</div>
+      <div class="profile-avatar">${escapeHTML(user.fullName.charAt(0).toUpperCase())}</div>
       <div>
         <h1>${escapeHTML(user.fullName)}</h1>
         <p class="profile-bio">${escapeHTML(user.bio || "Campus contributor.")}</p>
@@ -1582,16 +1609,28 @@ function initProfile() {
 
   const followBtn = document.getElementById("followBtn");
   if (followBtn) {
-    followBtn.addEventListener("click", () => {
+    followBtn.addEventListener("click", async () => {
       const btnEmail = followBtn.getAttribute("data-email");
       if (isFollowingAuthor(btnEmail)) {
-        unfollowAuthor(btnEmail);
-        followBtn.className = "btn btn-primary btn-sm";
-        followBtn.innerHTML = "<i class='fa-regular fa-user-plus'></i> Follow";
+        try {
+          const ok = await unfollowAuthor(btnEmail);
+          if (ok) {
+            followBtn.className = "btn btn-primary btn-sm";
+            followBtn.innerHTML = "<i class='fa-regular fa-user-plus'></i> Follow";
+          }
+        } catch (err) {
+          showToast(err.message || "Failed to update follow status.", "error");
+        }
       } else {
-        followAuthor(btnEmail);
-        followBtn.className = "btn btn-secondary btn-sm";
-        followBtn.innerHTML = "<i class='fa-solid fa-user-check'></i> Following";
+        try {
+          const ok = await followAuthor(btnEmail);
+          if (ok) {
+            followBtn.className = "btn btn-secondary btn-sm";
+            followBtn.innerHTML = "<i class='fa-solid fa-user-check'></i> Following";
+          }
+        } catch (err) {
+          showToast(err.message || "Failed to update follow status.", "error");
+        }
       }
     });
   }
@@ -1657,9 +1696,11 @@ function initSmoothExperience() {
 
 /* ===== Init ===== */
 document.addEventListener("DOMContentLoaded", async () => {
-  // Hydrate localStorage from MySQL — all existing rendering logic then works unchanged
-  await API.hydrateFromServer();
-  ensureDefaultAdminAccount();
+  try {
+    await API.hydrateFromServer();
+  } catch (err) {
+    console.error("Failed to load data from API:", err);
+  }
   guardAdminPage();
   initNav();
   initHeroTyping();
