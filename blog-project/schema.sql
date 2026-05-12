@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS user_kv (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ─── Seed default admin account ──────────────────────────
+-- IMPORTANT: Change this default admin password after first login.
 INSERT IGNORE INTO users (email, fullName, password, bio, expertise, role, createdAt)
 VALUES (
   'admin@placementprep.local',

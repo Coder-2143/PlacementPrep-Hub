@@ -44,14 +44,14 @@ $dbUser = getenv('DB_USER') ?: 'root';
 $dbPass = getenv('DB_PASS') ?: '';
 $dbPort = (int)(getenv('DB_PORT') ?: 3306);
 
-mysqli_report(MYSQLI_REPORT_OFF);
-$mysqli = @new mysqli($dbHost, $dbUser, $dbPass, $dbName, $dbPort);
-if ($mysqli->connect_errno) {
-    send_json(500, [
-        'ok' => false,
-        'error' => 'Database connection failed',
-        'info' => $mysqli->connect_error
-    ]);
+$mysqli = null;
+try {
+    $mysqli = new mysqli($dbHost, $dbUser, $dbPass, $dbName, $dbPort);
+} catch (Throwable $e) {
+    send_json(500, ['ok' => false, 'error' => 'Database connection failed']);
+}
+if (!$mysqli || $mysqli->connect_errno) {
+    send_json(500, ['ok' => false, 'error' => 'Database connection failed']);
 }
 $mysqli->set_charset('utf8mb4');
 
@@ -125,7 +125,7 @@ if ($endpoint === 'login' || $endpoint === 'users/login') {
     }
 
     $stored = (string)($user['password'] ?? '');
-    $valid = password_verify($password, $stored) || hash_equals($stored, $password);
+    $valid = password_verify($password, $stored);
     if (!$valid) {
         send_json(401, ['ok' => false, 'error' => 'Invalid credentials']);
     }

@@ -602,7 +602,7 @@ function initTheme() {
 function initHeroTyping() {
   const target = document.getElementById("typingText");
   if (!target) return;
-  const words = ["placement prep.", "DSA practice.", "resume building.", "interview confidence."];
+  const words = ["Placement Prep.", "DSA Practice.", "Resume Building.", "Interview Confidence."];
   let wordIndex = 0;
   let charIndex = 0;
   let deleting = false;
@@ -794,7 +794,7 @@ function initSinglePost() {
           <button class="btn btn-secondary" id="reportButton"><i class="fa-regular fa-flag"></i></button>
         </div>
       </div>
-      <div class="article-content section-small">${String(post.content || "").split("\n").filter(Boolean).map(p => `<p>${escapeHTML(p)}</p>`).join("")}</div>
+      <div class="article-content section-small" id="articleContent"></div>
       <button class="btn btn-secondary" id="likeButton" data-post-id="${escapeHTML(post.id)}" data-liked="${liked}"><i class="${liked ? "fa-solid" : "fa-regular"} fa-heart"></i> <span id="likeCount">${getLikeCount(post)}</span> Likes</button>
       <div class="dashboard-panel" id="reportPanel" style="margin-top:16px">
         <p class="eyebrow">Report guide</p>
@@ -841,6 +841,22 @@ function initSinglePost() {
     const sameCat = getAllPosts().filter(item => item.id !== post.id && item.category === post.category);
     const fallback = getAllPosts().filter(item => item.id !== post.id && item.category !== post.category);
     related.innerHTML = sameCat.concat(fallback).slice(0, 3).map(renderPostCard).join("");
+  }
+
+  const articleContent = document.getElementById("articleContent");
+  if (articleContent) {
+    const lines = String(post.content || "").split("\n").map(line => line.trim()).filter(Boolean);
+    if (!lines.length) {
+      const empty = document.createElement("p");
+      empty.textContent = "";
+      articleContent.appendChild(empty);
+    } else {
+      lines.forEach(line => {
+        const p = document.createElement("p");
+        p.textContent = line;
+        articleContent.appendChild(p);
+      });
+    }
   }
 
   initComments(post.id);
